@@ -50,11 +50,11 @@ init = tf.global_variables_initializer()
 saver = tf.train.Saver()
 
 #################################################
-# Create execution framework and helper functions
+# Create helper functions for reward computation
 #################################################
 
 def discount_rewards(rewards, discount_rate):
-    discounted_rewards = np.empty(len(rewards))
+    discounted_rewards = np.zeros(len(rewards))
     cumulative_rewards = 0
     for step in reversed( range(len(rewards)) ):
         cumulative_rewards = rewards[step] + (cumulative_rewards*discount_rate)
@@ -69,3 +69,52 @@ def discount_and_normalize_rewards(all_rewards, discout):
 	reward_std = flat_rewards.std()
 	return [(discounted_rewards - reward_mean) / reward_std
 			for discounted_rewards in all_discounted_rewards]
+
+#################################################
+# Train the policy
+#################################################
+env = gym.make("CartPole-v0")
+
+n_episodes = 300
+n_iterations = 1000 # Iterations in an episode
+n_episodes_per_update = 10 # Set this for the training period
+n_save_iterations = 25 # Save off the model at this period
+discount_rate = 0.95
+
+# Construct tensorflow's computations and training
+with tf.Session() as sess:
+    init.run()
+    for episode in range(n_episodes):
+        all_rewards = []
+        all_gradients = []
+        for sub_episode in range(n_episodes_per_update):
+            current_rewards = [] # Store the raw rewards for this episode
+            current_gradients = []
+            obsv = env.reset()
+            for i in range(n_iterations):
+                action_val, gradients_val = sess.run([action, gradients],
+                    feed_dict={X: obsv.reshape(1, n_inputs) })
+                obsv, reward, done, info = env.step(action_val[0][0])
+                current_rewards.append(reward)
+                current_gradients.append(gradients_val)
+                if done:
+                    break
+            all_rewards.append(current_rewards)
+            all_gradients.append(current_gradients)
+
+        all_rewards = discount_and_normalize_rewards(all_rewards, discount_rate)
+
+        if episode % n_save_iterations == 0:
+            print("Completed episode " + str(episode))
+
+        feed_dict = {}
+        for var_index, gradient_placeholder in enumerate(gradient_placeholders):
+            mean_gradients = np.mean([reward * all_gradients[game_index][step][var_index]
+                                      for game_index, rewards in enumerate(all_rewards)
+                                          for step, reward in enumerate(rewards)], axis=0)
+            feed_dict[gradient_placeholder] = mean_gradients
+        sess.run(training_operation, feed_dict=feed_dict)
+        if episode % n_save_iterations == 0:
+            saver.save(sess, "./cp_policy_net.ckpt")
+
+env.close()
